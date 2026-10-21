@@ -4,3 +4,4 @@ dist/
 __pycache__/
 clock_config.json
 clock_notes.json
+.gitignore
