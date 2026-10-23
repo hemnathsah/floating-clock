@@ -127,23 +127,20 @@ On first launch, Windows SmartScreen may display a warning for an unrecognized a
 
 3. Activate it:
 
-   Windows PowerShell
-   PowerShell
+Windows PowerShell:
       
-      ```bash
-      .\.venv\Scripts\Activate.ps1
+   ```bash
+   .\.venv\Scripts\Activate.ps1
 
-   Windows Command Prompt
-
-   DOS
+Windows Command Prompt:
       
-      ```bash
-      .venv\Scripts\activate.bat
+   ```bash
+   .venv\Scripts\activate.bat
 
-   macOS / Linux
+macOS / Linux
 
-      ```bash
-      source .venv/bin/activate
+   ```bash
+   source .venv/bin/activate
 
 4. Install dependencies (psutil):
 
