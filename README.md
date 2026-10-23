@@ -129,19 +129,21 @@ On first launch, Windows SmartScreen may display a warning for an unrecognized a
 
    Windows PowerShell
    PowerShell
-   ```bash
-   .\.venv\Scripts\Activate.ps1
+      
+      ```bash
+      .\.venv\Scripts\Activate.ps1
 
    Windows Command Prompt
 
    DOS
-   ```bash
-   .venv\Scripts\activate.bat
+      
+      ```bash
+      .venv\Scripts\activate.bat
 
    macOS / Linux
 
-   ```bash
-   source .venv/bin/activate
+      ```bash
+      source .venv/bin/activate
 
 4. Install dependencies (psutil):
 
