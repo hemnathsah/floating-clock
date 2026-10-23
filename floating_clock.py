@@ -9,6 +9,7 @@ import struct
 import wave
 import tempfile
 import random
+import re
 
 try:
     import winsound
@@ -253,6 +254,13 @@ class FloatingWidget:
             "auto_hide_frame": True,
             "timer_tone": "1. Zen Tibetan Bowl",
             "timer_loop_alert": True,
+            "batt_high_enabled": True,
+            "batt_high_limit": 100,
+            "batt_high_tone": "5. Victory Fanfare",
+            "batt_low_enabled": True,
+            "batt_low_limit": 15,
+            "batt_low_tone": "15. Urgent Radar Klaxon",
+            "batt_loop_alert": True,
             "digital_vis": "1. Spectrum Equalizer Bars (EQ)",
             "analog_vis": "1. Fire Particle Ring 🔥",
             "enable_visualizer": False,
@@ -272,6 +280,14 @@ class FloatingWidget:
         self.timer_alerting = False
         self.timer_label_text = "Timer"
 
+        # Battery Guardian State
+        self.battery_pct = 100
+        self.battery_plugged = False
+        self.last_batt_check = 0
+        self.batt_alert_mode = None  # None, "HIGH", or "LOW"
+        self.batt_high_notified = False
+        self.batt_low_notified = False
+
         self.root.geometry(self.config["geometry"])
         self.root.attributes("-topmost", True)
         self.root.attributes("-alpha", self.config["alpha"])
@@ -287,9 +303,7 @@ class FloatingWidget:
         self.settings_window = None
         self.notes_window = None
         self.timer_window = None
-        self.battery_pct = 100
-        self.battery_plugged = False
-        self.last_batt_check = 0
+        self.battery_window = None
 
         # Visualizer States
         self.vis_bars = [0.0 for _ in range(16)]
@@ -320,6 +334,9 @@ class FloatingWidget:
         self.settings_btn = tk.Button(self.title_bar, text="⚙", bd=0, font=("Segoe UI", 10), command=self.open_settings)
         self.settings_btn.pack(side="right", padx=2)
 
+        self.batt_btn = tk.Button(self.title_bar, text="🔋", bd=0, font=("Segoe UI", 9), command=self.open_battery_studio)
+        self.batt_btn.pack(side="right", padx=2)
+
         self.notes_btn = tk.Button(self.title_bar, text="📝", bd=0, font=("Segoe UI", 9), command=self.open_notes)
         self.notes_btn.pack(side="right", padx=2)
 
@@ -349,6 +366,10 @@ class FloatingWidget:
                     self.config["numerals"] = "English (0-9)"
                 if self.config["timer_tone"] not in TONE_LIBRARY:
                     self.config["timer_tone"] = "1. Zen Tibetan Bowl"
+                if self.config["batt_high_tone"] not in TONE_LIBRARY:
+                    self.config["batt_high_tone"] = "5. Victory Fanfare"
+                if self.config["batt_low_tone"] not in TONE_LIBRARY:
+                    self.config["batt_low_tone"] = "15. Urgent Radar Klaxon"
                 if self.config["digital_vis"] not in DIGITAL_VIS_TYPES:
                     self.config["digital_vis"] = DIGITAL_VIS_TYPES[0]
                 if self.config["analog_vis"] not in ANALOG_VIS_TYPES:
@@ -440,9 +461,195 @@ class FloatingWidget:
         for btn, fg in [(self.pin_btn, btn_fg if self.is_always_on_top else "#6c7086"),
                         (self.timer_btn, "#38bdf8"),
                         (self.notes_btn, "#fbbf24"),
+                        (self.batt_btn, "#a6e3a1"),
                         (self.settings_btn, btn_fg),
                         (self.close_btn, close_fg)]:
             btn.configure(bg=btn_bg, fg=fg, activebackground=btn_bg, activeforeground=fg)
+
+    # ======================== SMART BATTERY GUARDIAN ENGINE ========================
+    def evaluate_battery_limits(self):
+        high_lim = int(self.config.get("batt_high_limit", 100))
+        low_lim = int(self.config.get("batt_low_limit", 15))
+
+        # Reset notifications when charger state changes or percentage moves away
+        if not self.battery_plugged or self.battery_pct < high_lim:
+            self.batt_high_notified = False
+            if self.batt_alert_mode == "HIGH":
+                self.stop_battery_alert()
+
+        if self.battery_plugged or self.battery_pct > low_lim:
+            self.batt_low_notified = False
+            if self.batt_alert_mode == "LOW":
+                self.stop_battery_alert()
+
+        # Check Upper Limit (while charging/plugged in)
+        if self.config.get("batt_high_enabled", True) and self.battery_plugged:
+            if self.battery_pct >= high_lim and not self.batt_high_notified:
+                self.batt_high_notified = True
+                self.batt_alert_mode = "HIGH"
+                self.sound_engine.play(self.config["batt_high_tone"], loop=self.config["batt_loop_alert"])
+                self.refresh_battery_window_ui()
+
+        # Check Lower Limit (while on battery power)
+        if self.config.get("batt_low_enabled", True) and not self.battery_plugged:
+            if self.battery_pct <= low_lim and not self.batt_low_notified:
+                self.batt_low_notified = True
+                self.batt_alert_mode = "LOW"
+                self.sound_engine.play(self.config["batt_low_tone"], loop=self.config["batt_loop_alert"])
+                self.refresh_battery_window_ui()
+
+    def stop_battery_alert(self):
+        self.sound_engine.stop()
+        self.batt_alert_mode = None
+        self.refresh_battery_window_ui()
+
+    def open_battery_studio(self):
+        if self.battery_window and self.battery_window.winfo_exists():
+            self.battery_window.lift()
+            return
+
+        self.battery_window = tk.Toplevel(self.root)
+        self.battery_window.title("Battery Guardian Studio")
+        self.battery_window.geometry("345x435+{}+{}".format(self.root.winfo_rootx() + 25, self.root.winfo_rooty() + 25))
+        self.battery_window.attributes("-topmost", True)
+        self.battery_window.configure(bg="#181825")
+
+        # Live Battery Status Card
+        status_card = tk.Frame(self.battery_window, bg="#1e1e2e", pady=8, padx=10, highlightbackground="#313244", highlightthickness=1)
+        status_card.pack(fill="x", padx=10, pady=(10, 6))
+
+        self.batt_studio_title = tk.Label(status_card, text="LIVE BATTERY TELEMETRY", bg="#1e1e2e", fg="#94a3b8", font=("Segoe UI", 8, "bold"))
+        self.batt_studio_title.pack()
+
+        self.batt_studio_big = tk.Label(status_card, text="--%", bg="#1e1e2e", fg="#a6e3a1", font=("Consolas", 22, "bold"))
+        self.batt_studio_big.pack()
+
+        self.batt_dismiss_btn = tk.Button(
+            status_card, text="🔔 Dismiss Active Battery Alert", bg="#f43f5e", fg="white",
+            bd=0, font=("Segoe UI", 8, "bold"), padx=10, pady=4, command=self.stop_battery_alert
+        )
+
+        # --- UPPER LIMIT SECTION ---
+        high_card = tk.Frame(self.battery_window, bg="#1e1e2e", padx=10, pady=8, highlightbackground="#313244", highlightthickness=1)
+        high_card.pack(fill="x", padx=10, pady=4)
+
+        high_top = tk.Frame(high_card, bg="#1e1e2e")
+        high_top.pack(fill="x")
+
+        high_en_var = tk.BooleanVar(value=self.config["batt_high_enabled"])
+        tk.Checkbutton(
+            high_top, text="⚡ Upper Limit Alert (Charged):", variable=high_en_var,
+            bg="#1e1e2e", fg="#a6e3a1", selectcolor="#262637", activebackground="#1e1e2e",
+            font=("Segoe UI", 9, "bold"),
+            command=lambda: self.update_setting("batt_high_enabled", high_en_var.get())
+        ).pack(side="left")
+
+        self.spin_high = tk.Spinbox(
+            high_top, from_=50, to=100, width=4, bg="#262637", fg="white", bd=0,
+            font=("Consolas", 11, "bold"), justify="center"
+        )
+        self.spin_high.delete(0, "end")
+        self.spin_high.insert(0, str(self.config["batt_high_limit"]))
+        self.spin_high.pack(side="right", padx=2)
+        tk.Label(high_top, text="%", bg="#1e1e2e", fg="#cdd6f4", font=("Segoe UI", 9, "bold")).pack(side="right")
+
+        high_tone_row = tk.Frame(high_card, bg="#1e1e2e")
+        high_tone_row.pack(fill="x", pady=(6, 0))
+
+        self.high_tone_var = tk.StringVar(value=self.config["batt_high_tone"])
+        high_menu = ttk.Combobox(high_tone_row, textvariable=self.high_tone_var, values=list(TONE_LIBRARY.keys()), state="readonly", width=23)
+        high_menu.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        high_menu.bind("<<ComboboxSelected>>", lambda e: self.update_setting("batt_high_tone", self.high_tone_var.get()))
+
+        tk.Button(high_tone_row, text="🔊 Test", bg="#a6e3a1", fg="#11111b", bd=0, font=("Segoe UI", 8, "bold"), padx=7, pady=2, command=lambda: self.sound_engine.play(self.high_tone_var.get(), loop=False)).pack(side="left", padx=2)
+        tk.Button(high_tone_row, text="🔇", bg="#45475a", fg="white", bd=0, font=("Segoe UI", 8), padx=5, pady=2, command=self.sound_engine.stop).pack(side="left")
+
+        # --- LOWER LIMIT SECTION ---
+        low_card = tk.Frame(self.battery_window, bg="#1e1e2e", padx=10, pady=8, highlightbackground="#313244", highlightthickness=1)
+        low_card.pack(fill="x", padx=10, pady=4)
+
+        low_top = tk.Frame(low_card, bg="#1e1e2e")
+        low_top.pack(fill="x")
+
+        low_en_var = tk.BooleanVar(value=self.config["batt_low_enabled"])
+        tk.Checkbutton(
+            low_top, text="🪫 Lower Limit Alert (Low Batt):", variable=low_en_var,
+            bg="#1e1e2e", fg="#f43f5e", selectcolor="#262637", activebackground="#1e1e2e",
+            font=("Segoe UI", 9, "bold"),
+            command=lambda: self.update_setting("batt_low_enabled", low_en_var.get())
+        ).pack(side="left")
+
+        self.spin_low = tk.Spinbox(
+            low_top, from_=5, to=50, width=4, bg="#262637", fg="white", bd=0,
+            font=("Consolas", 11, "bold"), justify="center"
+        )
+        self.spin_low.delete(0, "end")
+        self.spin_low.insert(0, str(self.config["batt_low_limit"]))
+        self.spin_low.pack(side="right", padx=2)
+        tk.Label(low_top, text="%", bg="#1e1e2e", fg="#cdd6f4", font=("Segoe UI", 9, "bold")).pack(side="right")
+
+        low_tone_row = tk.Frame(low_card, bg="#1e1e2e")
+        low_tone_row.pack(fill="x", pady=(6, 0))
+
+        self.low_tone_var = tk.StringVar(value=self.config["batt_low_tone"])
+        low_menu = ttk.Combobox(low_tone_row, textvariable=self.low_tone_var, values=list(TONE_LIBRARY.keys()), state="readonly", width=23)
+        low_menu.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        low_menu.bind("<<ComboboxSelected>>", lambda e: self.update_setting("batt_low_tone", self.low_tone_var.get()))
+
+        tk.Button(low_tone_row, text="🔊 Test", bg="#f43f5e", fg="white", bd=0, font=("Segoe UI", 8, "bold"), padx=7, pady=2, command=lambda: self.sound_engine.play(self.low_tone_var.get(), loop=False)).pack(side="left", padx=2)
+        tk.Button(low_tone_row, text="🔇", bg="#45475a", fg="white", bd=0, font=("Segoe UI", 8), padx=5, pady=2, command=self.sound_engine.stop).pack(side="left")
+
+        def save_limits(*args):
+            try:
+                h_val = max(50, min(100, int(self.spin_high.get() or 100)))
+                l_val = max(5, min(50, int(self.spin_low.get() or 15)))
+                self.config["batt_high_limit"] = h_val
+                self.config["batt_low_limit"] = l_val
+                self.batt_high_notified = False
+                self.batt_low_notified = False
+                self.save_config()
+                self.evaluate_battery_limits()
+            except Exception:
+                pass
+
+        self.spin_high.config(command=save_limits)
+        self.spin_low.config(command=save_limits)
+        self.spin_high.bind("<KeyRelease>", save_limits)
+        self.spin_low.bind("<KeyRelease>", save_limits)
+
+        # Loop Alert Checkbox & Save Button
+        bot_row = tk.Frame(self.battery_window, bg="#181825")
+        bot_row.pack(fill="x", padx=10, pady=6)
+
+        loop_b_var = tk.BooleanVar(value=self.config["batt_loop_alert"])
+        tk.Checkbutton(
+            bot_row, text="Loop alert tone until dismissed", variable=loop_b_var,
+            bg="#181825", fg="#cdd6f4", selectcolor="#262637", activebackground="#181825",
+            command=lambda: self.update_setting("batt_loop_alert", loop_b_var.get())
+        ).pack(side="left")
+
+        tk.Button(
+            bot_row, text="✓ Apply Limits", bg="#89b4fa", fg="#11111b", bd=0,
+            font=("Segoe UI", 8, "bold"), padx=8, pady=3, command=save_limits
+        ).pack(side="right")
+
+        self.refresh_battery_window_ui()
+
+    def refresh_battery_window_ui(self):
+        if not (self.battery_window and self.battery_window.winfo_exists()):
+            return
+        state_str = "⚡ Charging" if self.battery_plugged else "🔋 On Battery"
+        self.batt_studio_big.config(text=f"{self.battery_pct}% ({state_str})")
+
+        if self.batt_alert_mode == "HIGH":
+            self.batt_studio_title.config(text=f"⚡ TARGET REACHED ({self.config['batt_high_limit']}%) - UNPLUG CHARGER!", fg="#a6e3a1")
+            self.batt_dismiss_btn.pack(pady=(4, 0))
+        elif self.batt_alert_mode == "LOW":
+            self.batt_studio_title.config(text=f"🪫 LOW BATTERY ({self.battery_pct}%) - PLUG IN CHARGER!", fg="#f43f5e")
+            self.batt_dismiss_btn.pack(pady=(4, 0))
+        else:
+            self.batt_studio_title.config(text=f"GUARDIAN ACTIVE • HIGH: {self.config['batt_high_limit']}% | LOW: {self.config['batt_low_limit']}%", fg="#94a3b8")
+            self.batt_dismiss_btn.pack_forget()
 
     # ======================== MUSIC VISUALIZER ENGINE ========================
     def check_active_audio(self):
@@ -798,6 +1005,13 @@ class FloatingWidget:
         scrollbar.config(command=self.note_text.yview)
         self.note_text.bind("<KeyRelease>", self.on_note_typed)
 
+        # --- NEW BINDINGS FOR SMART LISTS & CLIPBOARD ---
+        self.note_text.bind("<Return>", self.handle_note_return)
+        self.note_text.bind("<space>", self.handle_note_space)
+        self.note_text.bind("<ButtonRelease-1>", self.auto_copy_selection)
+        self.note_text.bind("<Button-3>", self.rmb_paste)
+
+        tk.Label(self.notes_window, text="✓ Auto-Save | Select=Copy | RMB=Paste | Smart Lists", bg="#11111b", fg="#6c7086", font=("Segoe UI", 7), pady=3).pack(side="bottom", fill="x")
         tk.Label(self.notes_window, text="✓ Auto-Save Active  |  Double-click any tab to rename", bg="#11111b", fg="#6c7086", font=("Segoe UI", 7), pady=3).pack(side="bottom", fill="x")
 
         self.render_note_tabs()
@@ -837,6 +1051,87 @@ class FloatingWidget:
         self.notes_data["tabs"][idx]["timestamp"] = stamp
         self.note_time_lbl.config(text=f"🕒 Last Written: {stamp}")
         self.save_notes()
+
+    def handle_note_space(self, event=None):
+        """Auto-indents when typing '1.' or '-' or '*' followed by Space."""
+        line_text = self.note_text.get("insert linestart", "insert")
+    
+        # If user types '1.' + Space -> becomes '  1. '
+        if re.match(r"^\d+\.$", line_text):
+            self.note_text.delete("insert linestart", "insert")
+            self.note_text.insert("insert", f"  {line_text} ")
+            self.on_note_typed()
+            return "break"
+        
+        # If user types '-' or '*' + Space -> becomes '  • '
+        elif line_text in ("-", "*"):
+            self.note_text.delete("insert linestart", "insert")
+            self.note_text.insert("insert", "  • ")
+            self.on_note_typed()
+            return "break"
+
+    def handle_note_return(self, event=None):
+        """Continues numbered lists or bullets on Enter; exits list if pressed on an empty item."""
+        line_text = self.note_text.get("insert linestart", "insert")
+
+        # 1. Check for Numbered List pattern (e.g., "  1. Buy milk")
+        num_match = re.match(r"^(\s*)(\d+)\.\s+(.*)$", line_text)
+        if num_match:
+            indent, num_str, rest_of_line = num_match.groups()
+            if not rest_of_line.strip():
+                # Line is empty (user pressed Enter twice) -> clear bullet to exit list
+                self.note_text.delete("insert linestart", "insert")
+                self.on_note_typed()
+                return "break"
+            next_num = int(num_str) + 1
+            self.note_text.insert("insert", f"\n{indent}{next_num}. ")
+            self.note_text.see("insert")
+            self.on_note_typed()
+            return "break"
+
+        # 2. Check for Bullet List pattern (e.g., "  • Task item")
+        bul_match = re.match(r"^(\s*)([•\-\*])\s+(.*)$", line_text)
+        if bul_match:
+            indent, bullet, rest_of_line = bul_match.groups()
+            if not rest_of_line.strip():
+                # Line is empty -> clear bullet to exit list
+                self.note_text.delete("insert linestart", "insert")
+                self.on_note_typed()
+                return "break"
+            self.note_text.insert("insert", f"\n{indent}{bullet} ")
+            self.note_text.see("insert")
+            self.on_note_typed()
+            return "break"
+
+    def auto_copy_selection(self, event=None):
+        """Automatically copies highlighted text to clipboard when mouse button is released."""
+        try:
+            if self.note_text.tag_ranges("sel"):
+                selected_text = self.note_text.get("sel.first", "sel.last")
+                if selected_text:
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(selected_text)
+                    self.note_time_lbl.config(text="📋 Copied selection to clipboard!")
+        except Exception:
+            pass
+
+    def rmb_paste(self, event):
+        """Pastes clipboard contents at the mouse cursor position on Right-Click (RMB)."""
+        try:
+            # Move cursor to exact point where user right-clicked
+            click_index = self.note_text.index(f"@{event.x},{event.y}")
+            self.note_text.mark_set("insert", click_index)
+            self.note_text.focus_set()
+
+            clip_text = self.root.clipboard_get()
+            if clip_text:
+                if self.note_text.tag_ranges("sel"):
+                    self.note_text.delete("sel.first", "sel.last")
+                self.note_text.insert("insert", clip_text)
+                self.on_note_typed()
+        except Exception:
+            pass
+        return "break"
 
     def switch_note_tab(self, idx):
         self.notes_data["active_tab"] = idx
@@ -911,6 +1206,9 @@ class FloatingWidget:
 
         return "  |  ".join(parts)
 
+    def has_active_overlay(self):
+        return self.timer_running or self.timer_paused or self.timer_alerting or (self.batt_alert_mode is not None)
+
     def draw_timer_overlay_badge(self, cx, y_pos, r_scale):
         if self.timer_alerting:
             pulse = int(time.time() * 4) % 2 == 0
@@ -919,6 +1217,19 @@ class FloatingWidget:
             self.canvas.create_rectangle(cx - max(58, r_scale * 0.65), y_pos - max(11, r_scale * 0.13), cx + max(58, r_scale * 0.65), y_pos + max(11, r_scale * 0.13), fill=bg_c, outline="#ffffff", width=1, tags=tag_id)
             self.canvas.create_text(cx, y_pos, text="🔔 TIME UP! (CLICK)", fill="#11111b", font=("Segoe UI", max(7, int(r_scale * 0.095)), "bold"), tags=tag_id)
             self.canvas.tag_bind(tag_id, "<Button-1>", lambda e: self.stop_timer_alert())
+        elif self.batt_alert_mode is not None:
+            pulse = int(time.time() * 4) % 2 == 0
+            if self.batt_alert_mode == "HIGH":
+                bg_c = "#10b981" if pulse else "#fbbf24"
+                txt = f"⚡ {self.battery_pct}% FULL! (CLICK)"
+            else:
+                bg_c = "#f43f5e" if pulse else "#fbbf24"
+                txt = f"🪫 {self.battery_pct}% LOW! (CLICK)"
+            tag_id = "dismiss_batt_alert"
+            bw, bh = max(62, r_scale * 0.68), max(11, r_scale * 0.13)
+            self.canvas.create_rectangle(cx - bw, y_pos - bh, cx + bw, y_pos + bh, fill=bg_c, outline="#ffffff", width=1, tags=tag_id)
+            self.canvas.create_text(cx, y_pos, text=txt, fill="#11111b", font=("Segoe UI", max(7, int(r_scale * 0.095)), "bold"), tags=tag_id)
+            self.canvas.tag_bind(tag_id, "<Button-1>", lambda e: self.stop_battery_alert())
         elif self.timer_running or self.timer_paused:
             col = "#38bdf8" if self.timer_running else "#f59e0b"
             self.canvas.create_rectangle(cx - max(42, r_scale * 0.48), y_pos - max(9, r_scale * 0.105), cx + max(42, r_scale * 0.48), y_pos + max(9, r_scale * 0.105), fill="#0f172a", outline=col, width=1)
@@ -981,7 +1292,7 @@ class FloatingWidget:
             self.canvas.create_text(cx, cy - r * 0.04, text=f"{hr_str}:{min_str}", fill=theme["fg"], font=(theme["font"], t_font, "bold"))
             self.canvas.create_text(cx, cy + r * 0.24, text=f":{sec_str}  {ampm}".strip(), fill=theme["accent"], font=(theme["font"], max(8, int(r * 0.13)), "bold"))
 
-            if self.timer_running or self.timer_paused or self.timer_alerting:
+            if self.has_active_overlay():
                 self.draw_timer_overlay_badge(cx, cy + r * 0.54, r)
             elif self.config["show_subdial"]:
                 self.canvas.create_text(cx, cy + r * 0.56, text=batt_str, fill=theme["accent2"], font=(theme["font"], max(7, int(r * 0.11)), "bold"))
@@ -1008,7 +1319,7 @@ class FloatingWidget:
 
             self.draw_music_visualizer(cx, h * 0.82, min(w, h) * 0.35, theme["accent"])
 
-            if self.timer_running or self.timer_paused or self.timer_alerting:
+            if self.has_active_overlay():
                 self.draw_timer_overlay_badge(cx, h * 0.87, min(w, h) * 0.45)
             else:
                 footer_txt = f"{ampm}   {batt_str if self.config['show_subdial'] else ''}".strip()
@@ -1037,7 +1348,7 @@ class FloatingWidget:
 
             self.draw_music_visualizer(cx, top_m + (h - top_m) * 0.72, min(w, h) * 0.35, theme["accent"])
 
-            if self.timer_running or self.timer_paused or self.timer_alerting:
+            if self.has_active_overlay():
                 self.draw_timer_overlay_badge(cx, top_m + (h - top_m) * 0.80, min(w, h) * 0.45)
             elif self.config["show_subdial"]:
                 bar_w = (w - m * 4) * 0.55
@@ -1081,7 +1392,8 @@ class FloatingWidget:
         cx, cy = w / 2, (h + 20) / 2
         r = min(w, h - 24) / 2 * 0.92
 
-        bezel_col = "#f43f5e" if (self.timer_alerting and int(time.time() * 4) % 2 == 0) else style["bezel"]
+        is_flashing = (self.timer_alerting or self.batt_alert_mode is not None) and (int(time.time() * 4) % 2 == 0)
+        bezel_col = ("#10b981" if self.batt_alert_mode == "HIGH" else "#f43f5e") if is_flashing else style["bezel"]
         self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill=style["bezel_inner"], outline=bezel_col, width=max(2, int(r * 0.04)))
         face_r = r * 0.92
         self.canvas.create_oval(cx - face_r, cy - face_r, cx + face_r, cy + face_r, fill=style["face"], outline=bezel_col, width=1)
@@ -1123,11 +1435,11 @@ class FloatingWidget:
             cal_w = min(face_r * 0.68, max(36, len(cal_str) * (r * 0.042)))
             cal_h = r * 0.095
             badge_bg = style["ring"] if stype == "heritage" else style["bg"]
-            badge_fg = style["num_color"] if stype == "heritage" else style["num_color"]
+            badge_fg = style["num_color"]
             self.canvas.create_rectangle(cx - cal_w, cal_y - cal_h, cx + cal_w, cal_y + cal_h, fill=badge_bg, outline=style["bezel"], width=1)
             self.canvas.create_text(cx, cal_y, text=cal_str, fill=badge_fg, font=(style["font"], max(6, int(r * 0.075)), "bold"))
 
-        if self.timer_running or self.timer_paused or self.timer_alerting:
+        if self.has_active_overlay():
             self.draw_timer_overlay_badge(cx, cy + face_r * 0.38, r)
         elif self.config["show_subdial"] and r > 48:
             sub_cy = cy + face_r * 0.36
@@ -1322,13 +1634,15 @@ class FloatingWidget:
         self.tick_timer()
 
         now = time.time()
-        if now - self.last_batt_check > 5:
+        if now - self.last_batt_check > 3:
             self.last_batt_check = now
             if hasattr(psutil, "sensors_battery"):
                 battery = psutil.sensors_battery()
                 if battery:
                     self.battery_pct = int(battery.percent)
-                    self.battery_plugged = battery.power_plugged
+                    self.battery_plugged = bool(battery.power_plugged)
+                    self.evaluate_battery_limits()
+                    self.refresh_battery_window_ui()
 
         if self.config["clock_type"] == "Digital":
             self.draw_digital()
