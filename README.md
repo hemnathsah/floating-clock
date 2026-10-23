@@ -117,7 +117,7 @@ On first launch, Windows SmartScreen may display a warning for an unrecognized a
 1. Clone the repository:
 
    ```bash
-   git clone [https://github.com/hemnathsah/floating-clock.git]
+   git clone https://github.com/hemnathsah/floating-clock.git
    cd floating-clock
 
 2. Create a virtual environment:
